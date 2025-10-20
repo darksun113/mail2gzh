@@ -4,8 +4,9 @@
 
 ## 功能特性
 
-- 📧 **Gmail 集成**: 自动读取 Gmail 指定收件箱的订阅邮件
-- 🌐 **智能翻译**: 使用 OpenAI API 将英文邮件翻译成中文
+- 📧 **Gmail 集成**: 自动读取 Gmail 指定收件箱的订阅邮件，支持高级搜索过滤
+- 🤖 **AI 智能翻译**: 使用 GPT-5 模型将邮件翻译成中文，生成符合微信公众号规范的 HTML
+- 🖼️ **图片处理**: 自动下载并重新上传图片到微信公众号平台
 - 📱 **微信发布**: 自动发布翻译后的内容到微信公众号
 - 💾 **数据缓存**: 使用 MySQL 数据库缓存邮件和翻译内容
 - 🔄 **自动化工作流**: 支持自动同步、翻译和发布的完整流程
@@ -13,6 +14,7 @@
 - 🛡️ **RESTful API**: 提供完整的 API 接口，易于集成和扩展
 - 🐳 **容器化部署**: 支持 Docker 和 Docker Compose 部署
 - 📊 **日志系统**: 完整的日志记录和监控
+- 🔍 **内容验证**: 自动验证翻译内容长度和格式，确保符合微信规范
 
 ## 技术栈
 
@@ -86,13 +88,95 @@ WECHAT_APP_ID=your_wechat_app_id
 WECHAT_APP_SECRET=your_wechat_app_secret
 ```
 
-### 5. 配置 Gmail API
+### 5. 配置 Gmail API（服务账号）
+
+#### 5.1 创建服务账号
 
 1. 访问 [Google Cloud Console](https://console.cloud.google.com/)
 2. 创建新项目或选择现有项目
 3. 启用 Gmail API
-4. 创建 OAuth 2.0 凭据（桌面应用）
-5. 下载凭据文件并保存为 `credentials.json`
+4. 进入 "IAM 和管理" > "服务账号"
+5. 点击 "创建服务账号"
+6. 填写服务账号名称和描述
+7. 点击 "创建并继续"
+
+#### 5.2 配置域范围委派（重要）
+
+1. 在服务账号列表中，点击刚创建的服务账号
+2. 切换到 "详细信息" 标签
+3. 点击 "显示域范围委派"
+4. 点击 "添加密钥" > "创建新密钥"
+5. 选择 "JSON" 格式，下载密钥文件
+6. 将密钥文件重命名为 `service-account-key.json` 并放在项目根目录
+
+#### 5.3 启用域范围委派
+
+1. 在服务账号的 "详细信息" 页面
+2. 点击 "显示域范围委派"
+3. 点击 "添加域范围委派"
+4. 填写以下信息：
+   - **产品名称**: `Mail2GZH`
+   - **主域**: 您的 Gmail 域名（如 `gmail.com`）
+   - **范围**: `https://www.googleapis.com/auth/gmail.readonly`
+5. 点击 "授权"
+
+#### 5.4 配置环境变量
+
+在 `.env` 文件中设置：
+
+```bash
+# Gmail 服务账号配置
+GMAIL_CREDENTIALS_FILE=service-account-key.json
+GMAIL_SUBJECT_EMAIL=your-email@gmail.com  # 要访问的邮箱地址
+GMAIL_QUERY=is:unread label:inbox
+```
+
+**注意**：
+- 服务账号只能访问自己的 Gmail 数据
+- 如果使用 G Suite/Google Workspace，可以访问组织内的任何邮箱
+- 个人 Gmail 账户需要特殊配置才能使用服务账号
+
+#### Gmail 查询条件配置
+
+在 `.env` 文件中配置 `GMAIL_QUERY` 参数来筛选邮件：
+
+```bash
+# 基本查询示例
+GMAIL_QUERY=is:unread label:inbox
+
+# 按主题筛选
+GMAIL_QUERY=is:unread subject:newsletter
+
+# 按发件人筛选
+GMAIL_QUERY=is:unread from:example@gmail.com
+
+# 按标签筛选
+GMAIL_QUERY=is:unread label:important
+
+# 按时间筛选
+GMAIL_QUERY=is:unread newer_than:7d
+
+# 组合条件
+GMAIL_QUERY=is:unread label:inbox subject:newsletter from:example@gmail.com
+
+# 排除特定邮件
+GMAIL_QUERY=is:unread -from:noreply@example.com
+
+# 搜索特定文件夹（标签）
+GMAIL_QUERY=is:unread label:inbox OR label:important
+```
+
+**常用查询操作符：**
+- `is:unread` - 未读邮件
+- `is:read` - 已读邮件
+- `from:email@example.com` - 特定发件人
+- `to:email@example.com` - 特定收件人
+- `subject:关键词` - 主题包含关键词
+- `label:标签名` - 特定标签/文件夹
+- `newer_than:7d` - 7天内的邮件
+- `older_than:30d` - 30天前的邮件
+- `has:attachment` - 包含附件
+- `-关键词` - 排除包含关键词的邮件
 
 ### 6. 创建数据库
 
@@ -188,19 +272,37 @@ curl -X POST "http://localhost:8000/api/v1/emails/sync?max_results=10"
 curl -X POST "http://localhost:8000/api/v1/emails/1/translate"
 ```
 
-### 3. 发布到微信公众号
+### 3. 批量翻译邮件
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/emails/batch-translate?max_emails=5"
+```
+
+### 4. 处理邮件图片
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/emails/1/process-images"
+```
+
+### 5. 预览微信内容
+
+```bash
+curl "http://localhost:8000/api/v1/emails/1/preview"
+```
+
+### 6. 发布到微信公众号
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/emails/1/publish"
 ```
 
-### 4. 自动处理工作流
+### 7. 自动处理工作流
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/workflow/auto-process?max_emails=5"
 ```
 
-### 5. 定时任务管理
+### 8. 定时任务管理
 
 查看定时任务状态：
 

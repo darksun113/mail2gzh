@@ -6,9 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
 from datetime import datetime
+import json
 
 from ..database import get_db
 from ..models.email import Email
+from ..config import settings
 from ..schemas.email import (
     EmailCreate, EmailResponse, EmailListResponse, EmailUpdate,
     TranslationRequest, TranslationResponse,
@@ -16,6 +18,7 @@ from ..schemas.email import (
 )
 from ..services.gmail_service import GmailService
 from ..services.translation_service import TranslationService
+from ..services.wechat_image_service import WeChatImageService
 from ..services.wechat_service import WeChatService
 from ..scheduler import scheduler
 from loguru import logger
@@ -41,14 +44,18 @@ async def health_check():
 
 @router.post("/emails/sync", response_model=dict)
 async def sync_emails(
-    max_results: int = Query(default=10, ge=1, le=100),
+    max_results: int = Query(default=None, ge=1, le=500),
     db: Session = Depends(get_db)
 ):
     """同步 Gmail 邮件到数据库"""
     try:
         gmail_service = GmailService()
+        if not gmail_service.authenticate():
+            raise HTTPException(status_code=500, detail="Gmail API 认证失败")
         
-        # 获取未读邮件
+        # 获取未读邮件（如果未指定 max_results，使用配置中的默认值）
+        if max_results is None:
+            max_results = settings.gmail_max_results
         messages = gmail_service.get_unread_emails(max_results=max_results)
         
         synced_count = 0
@@ -57,30 +64,26 @@ async def sync_emails(
         for message in messages:
             # 检查邮件是否已存在
             existing_email = db.query(Email).filter(
-                Email.gmail_id == message['id']
+                Email.gmail_id == message['gmail_id']
             ).first()
             
             if existing_email:
                 skipped_count += 1
                 continue
             
-            # 获取邮件详情
-            email_data = gmail_service.get_email_details(message['id'])
+            # 创建邮件记录（message 已经包含所有需要的数据）
+            new_email = Email(
+                gmail_id=message['gmail_id'],
+                subject=message['subject'],
+                sender=message['sender'],
+                recipient=message['recipient'],
+                content=message['content'],
+                html_content=message['html_content'],
+                received_at=datetime.now()  # 需要解析实际时间
+            )
             
-            if email_data:
-                # 创建邮件记录
-                new_email = Email(
-                    gmail_id=email_data['gmail_id'],
-                    subject=email_data['subject'],
-                    sender=email_data['sender'],
-                    recipient=email_data['recipient'],
-                    content=email_data['content'],
-                    html_content=email_data['html_content'],
-                    received_at=datetime.now()  # 需要解析实际时间
-                )
-                
-                db.add(new_email)
-                synced_count += 1
+            db.add(new_email)
+            synced_count += 1
         
         db.commit()
         
@@ -142,7 +145,7 @@ async def get_email(email_id: int, db: Session = Depends(get_db)):
     return email
 
 
-@router.post("/emails/{email_id}/translate", response_model=EmailResponse)
+@router.post("/emails/{email_id}/translate", response_model=dict)
 async def translate_email(email_id: int, db: Session = Depends(get_db)):
     """翻译邮件内容"""
     try:
@@ -152,32 +155,226 @@ async def translate_email(email_id: int, db: Session = Depends(get_db)):
         if not email:
             raise HTTPException(status_code=404, detail="邮件不存在")
         
-        if email.translated_content:
-            return email
+        if email.translated_content and email.news_source:
+            return {
+                "success": True,
+                "message": "邮件已翻译",
+                "email_id": email_id,
+                "translated_title": email.subject,
+                "news_source": email.news_source
+            }
         
         # 翻译服务
         translation_service = TranslationService()
         
-        # 翻译纯文本内容
-        if email.content:
-            text_result = translation_service.translate_text(email.content)
-            if text_result.success:
-                email.translated_content = text_result.translated_content
+        # 准备邮件数据
+        email_data = {
+            'subject': email.subject,
+            'sender': email.sender,
+            'html_content': email.html_content or email.content
+        }
         
-        # 翻译 HTML 内容
-        if email.html_content:
-            html_result = translation_service.translate_html(email.html_content)
-            if html_result.success:
-                email.translated_html_content = html_result.translated_content
+        # 执行翻译
+        result = translation_service.translate_email(email_data)
+        
+        if result.get('error'):
+            raise Exception(result['error'])
+        
+        # 更新邮件记录
+        email.translated_content = result.get('translated_html', '')
+        email.news_source = result.get('news_source', email.sender)
+        email.translated_summary = result.get('translated_summary', '')
+        email.wechat_html_content = result.get('translated_html', '')
+        email.content_length = result.get('content_length', 0)
+        email.images_processed = False
+        email.publish_ready = result.get('publish_ready', False)
+        email.images_info = json.dumps(result.get('images_info', []))
         
         db.commit()
         db.refresh(email)
         
-        return email
+        return {
+            "success": True,
+            "message": "邮件翻译完成",
+            "email_id": email_id,
+            "translated_title": result.get('translated_title', email.subject),
+            "news_source": result.get('news_source', email.sender),
+            "content_length": result.get('content_length', 0),
+            "publish_ready": result.get('publish_ready', False),
+            "images_count": len(result.get('images_info', []))
+        }
         
     except Exception as e:
         logger.error(f"翻译邮件失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"翻译邮件失败: {str(e)}")
+
+
+@router.post("/emails/{email_id}/process-images", response_model=dict)
+async def process_email_images(email_id: int, db: Session = Depends(get_db)):
+    """处理邮件图片"""
+    try:
+        # 获取邮件
+        email = db.query(Email).filter(Email.id == email_id).first()
+        
+        if not email:
+            raise HTTPException(status_code=404, detail="邮件不存在")
+        
+        if email.images_processed:
+            return {
+                "success": True,
+                "message": "图片已处理",
+                "email_id": email_id
+            }
+        
+        if not email.images_info:
+            return {
+                "success": True,
+                "message": "邮件中无图片",
+                "email_id": email_id
+            }
+        
+        # 图片处理服务
+        image_service = WeChatImageService()
+        
+        # 解析图片信息
+        images_info = json.loads(email.images_info) if isinstance(email.images_info, str) else email.images_info
+        
+        # 处理图片
+        result = image_service.process_images(images_info, email.wechat_html_content or email.translated_html_content)
+        
+        if result['success']:
+            # 更新邮件记录
+            email.wechat_html_content = result['updated_html']
+            email.images_processed = result['images_processed']
+            email.publish_ready = True
+            
+            db.commit()
+            db.refresh(email)
+        
+        return {
+            "success": result['success'],
+            "message": "图片处理完成" if result['success'] else "图片处理失败",
+            "email_id": email_id,
+            "processed_images": len(result.get('processed_images', [])),
+            "failed_images": len(result.get('failed_images', [])),
+            "images_processed": result.get('images_processed', False)
+        }
+        
+    except Exception as e:
+        logger.error(f"处理邮件图片失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"处理邮件图片失败: {str(e)}")
+
+
+@router.post("/emails/batch-translate", response_model=dict)
+async def batch_translate_emails(
+    max_emails: int = Query(default=5, ge=1, le=20),
+    db: Session = Depends(get_db)
+):
+    """批量翻译邮件"""
+    try:
+        # 获取未翻译的邮件
+        untranslated_emails = db.query(Email).filter(
+            Email.translated_content.is_(None)
+        ).limit(max_emails).all()
+        
+        if not untranslated_emails:
+            return {
+                "success": True,
+                "message": "没有需要翻译的邮件",
+                "translated_count": 0
+            }
+        
+        translation_service = TranslationService()
+        translated_count = 0
+        errors = []
+        
+        for email in untranslated_emails:
+            try:
+                # 准备邮件数据
+                email_data = {
+                    'subject': email.subject,
+                    'sender': email.sender,
+                    'html_content': email.html_content or email.content
+                }
+                
+                # 执行翻译
+                result = translation_service.translate_email(email_data)
+                
+                if not result.get('error'):
+                    # 更新邮件记录
+                    email.translated_content = result.get('translated_html', '')
+                    email.news_source = result.get('news_source', email.sender)
+                    email.translated_summary = result.get('translated_summary', '')
+                    email.wechat_html_content = result.get('translated_html', '')
+                    email.content_length = result.get('content_length', 0)
+                    email.images_processed = False
+                    email.publish_ready = result.get('publish_ready', False)
+                    email.images_info = json.dumps(result.get('images_info', []))
+                    
+                    translated_count += 1
+                else:
+                    errors.append(f"邮件 {email.id} 翻译失败: {result['error']}")
+                    
+            except Exception as e:
+                error_msg = f"邮件 {email.id} 翻译异常: {str(e)}"
+                logger.error(error_msg)
+                errors.append(error_msg)
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": f"批量翻译完成，成功 {translated_count} 封",
+            "translated_count": translated_count,
+            "total_processed": len(untranslated_emails),
+            "errors": errors
+        }
+        
+    except Exception as e:
+        logger.error(f"批量翻译邮件失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"批量翻译邮件失败: {str(e)}")
+
+
+@router.get("/emails/{email_id}/preview", response_model=dict)
+async def preview_wechat_content(email_id: int, db: Session = Depends(get_db)):
+    """预览微信公众号内容"""
+    try:
+        # 获取邮件
+        email = db.query(Email).filter(Email.id == email_id).first()
+        
+        if not email:
+            raise HTTPException(status_code=404, detail="邮件不存在")
+        
+        if not email.translated_content:
+            raise HTTPException(status_code=400, detail="邮件未翻译")
+        
+        # 解析图片信息
+        images_info = []
+        if email.images_info:
+            try:
+                images_info = json.loads(email.images_info) if isinstance(email.images_info, str) else email.images_info
+            except:
+                images_info = []
+        
+        return {
+            "success": True,
+            "email_id": email_id,
+            "translated_title": email.subject,
+            "news_source": email.news_source,
+            "translated_summary": email.translated_summary,
+            "wechat_html_content": email.wechat_html_content,
+            "content_length": email.content_length,
+            "publish_ready": email.publish_ready,
+            "images_processed": email.images_processed,
+            "images_count": len(images_info),
+            "images_info": images_info
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"预览微信内容失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"预览微信内容失败: {str(e)}")
 
 
 @router.post("/emails/{email_id}/publish", response_model=WeChatPublishResponse)

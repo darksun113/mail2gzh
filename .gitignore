@@ -64,7 +64,7 @@ logs/
 *.tmp
 *.temp
 
-# Gmail API credentials
+# Gmail API credentials (OAuth 2.0)
 credentials.json
 token.json
 

@@ -41,7 +41,11 @@ check_python() {
     python_version=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
     log_info "当前 Python 版本: $python_version"
     
-    if [[ $(echo "$python_version < 3.8" | bc -l) -eq 1 ]]; then
+    # 检查 Python 版本是否满足要求（3.8+）
+    major_version=$(echo $python_version | cut -d. -f1)
+    minor_version=$(echo $python_version | cut -d. -f2)
+    
+    if [ "$major_version" -lt 3 ] || ([ "$major_version" -eq 3 ] && [ "$minor_version" -lt 8 ]); then
         log_error "需要 Python 3.8+，当前版本: $python_version"
         exit 1
     fi

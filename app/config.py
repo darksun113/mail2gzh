@@ -24,16 +24,22 @@ class Settings(BaseSettings):
     db_password: str = ""
     db_charset: str = "utf8mb4"
     
-    # Gmail API 配置
+    # Gmail API 配置（OAuth 2.0 用户授权）
     gmail_credentials_file: str = "credentials.json"
     gmail_token_file: str = "token.json"
     gmail_scopes: str = "https://www.googleapis.com/auth/gmail.readonly"
     gmail_query: str = "is:unread label:inbox"
+    gmail_max_results: int = 50  # 每次同步的最大邮件数量
     
     # OpenAI API 配置
     openai_api_key: str = ""
-    openai_model: str = "gpt-3.5-turbo"
-    openai_max_tokens: int = 2000
+    openai_model: str = "gpt-5-2025-08-07"
+    openai_max_tokens: int = 4000
+    
+    # 内容长度和发布控制
+    max_content_length: int = 20000
+    daily_publish_limit: int = 1
+    batch_publish_limit: int = 5
     openai_temperature: float = 0.3
     
     # 微信公众号配置
