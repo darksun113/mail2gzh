@@ -71,4 +71,7 @@ token.json
 # WeChat API credentials
 wechat_credentials.json
 
-.historyservice-account-key.json
+.history/
+
+# Gmail API credentials (Service Account)
+service-account-key.json
