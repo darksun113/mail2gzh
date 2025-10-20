@@ -280,7 +280,7 @@ class TaskScheduler:
     
     def _job_executed(self, event):
         """任务执行完成事件"""
-        logger.info(f"任务执行完成: {event.job_id} - {event.job}")
+        logger.info(f"任务执行完成: {event.job_id}")
     
     def _job_error(self, event):
         """任务执行错误事件"""

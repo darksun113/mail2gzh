@@ -76,9 +76,7 @@ class TranslationService:
                         "role": "user", 
                         "content": prompt
                     }
-                ],
-                max_tokens=self.max_tokens,
-                temperature=0.3
+                ]
             )
             
             content = response.choices[0].message.content.strip()
