@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  mail2gzh:
+    build: .
+    container_name: mail2gzh
+    restart: unless-stopped
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=mail2gzh
+      - DB_USER=mail2gzh
+      - DB_PASSWORD=mail2gzh_password
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env
+      - ./credentials.json:/app/credentials.json
+      - ./token.json:/app/token.json
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - mail2gzh-network
+
+  mysql:
+    image: mysql:8.0
+    container_name: mail2gzh-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: mail2gzh
+      MYSQL_USER: mail2gzh
+      MYSQL_PASSWORD: mail2gzh_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+    networks:
+      - mail2gzh-network
+
+  web:
+    build: .
+    container_name: mail2gzh-web
+    restart: unless-stopped
+    command: ["python", "-m", "app.main"]
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=mail2gzh
+      - DB_USER=mail2gzh
+      - DB_PASSWORD=mail2gzh_password
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env
+      - ./credentials.json:/app/credentials.json
+      - ./token.json:/app/token.json
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - mail2gzh-network
+
+volumes:
+  mysql_data:
+
+networks:
+  mail2gzh-network:
+    driver: bridge

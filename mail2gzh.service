@@ -1,0 +1,26 @@
+[Unit]
+Description=Mail2GZH Email to WeChat Service
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/path/to/mail2gzh
+Environment=PATH=/path/to/mail2gzh/venv/bin
+ExecStart=/path/to/mail2gzh/venv/bin/python /path/to/mail2gzh/run_scheduler.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# 安全设置
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/path/to/mail2gzh/logs
+
+[Install]
+WantedBy=multi-user.target
