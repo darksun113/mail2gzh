@@ -71,4 +71,4 @@ token.json
 # WeChat API credentials
 wechat_credentials.json
 
-.history
+.historyservice-account-key.json
